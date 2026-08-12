@@ -7007,9 +7007,18 @@ std::optional<int> State::sinkActiveListItemUnchecked() {
 	}
 	const auto listKind = owner->listKind;
 	clearTemporaryDownParagraph();
+	static_cast<void>(normalizeTextOnlyListItemForInsertion(
+		ListItemChildrenContainer(surface->path, itemIndex - 1)));
+	owner = block(surface->path);
+	if (!owner || itemIndex >= int(owner->listItems.size())) {
+		return std::nullopt;
+	}
 	auto moved = std::move(owner->listItems[itemIndex]);
 	owner->listItems.erase(owner->listItems.begin() + itemIndex);
 	auto &previous = owner->listItems[itemIndex - 1];
+	if (previous.blocks.empty()) {
+		previous.blocks.push_back(MakeParagraphBlock());
+	}
 	auto nestedIndex = int(previous.blocks.size()) - 1;
 	if (nestedIndex < 0
 		|| previous.blocks[nestedIndex].kind != BlockKind::List
@@ -7082,6 +7091,28 @@ std::optional<int> State::liftActiveListItemUnchecked() {
 		return std::nullopt;
 	}
 	clearTemporaryDownParagraph();
+	auto sourceLeaf = LeafPath();
+	if (const auto descriptor = textNode(_activeTextOrdinal)) {
+		sourceLeaf = descriptor->leaf;
+	}
+	if (itemIndex + 1 < int(owner->listItems.size())
+		&& (sourceLeaf.kind == LeafKind::ListItemText)) {
+		static_cast<void>(normalizeTextOnlyListItemForInsertion(
+			ListItemChildrenContainer(surface->path, itemIndex)));
+		owner = block(surface->path);
+		if (!owner || itemIndex >= int(owner->listItems.size())) {
+			return std::nullopt;
+		}
+		auto &item = owner->listItems[itemIndex];
+		if (item.blocks.empty()) {
+			item.blocks.push_back(MakeParagraphBlock());
+		}
+	}
+	if (!owner->listItems[itemIndex].blocks.empty()
+		&& (sourceLeaf.kind == LeafKind::ListItemText)) {
+		sourceLeaf = LeafPath{ .kind = LeafKind::BlockText };
+		sourceLeaf.block.index = 0;
+	}
 	auto moved = std::move(owner->listItems[itemIndex]);
 	if (itemIndex + 1 < int(owner->listItems.size())) {
 		auto rest = Block();
@@ -7109,7 +7140,8 @@ std::optional<int> State::liftActiveListItemUnchecked() {
 	parentList->listItems.insert(
 		parentList->listItems.begin() + parentItemIndex + 1,
 		std::move(moved));
-	const auto target = rebasedActiveListItemLeaf(
+	const auto target = rebasedListItemLeaf(
+		sourceLeaf,
 		parentPath,
 		parentItemIndex + 1);
 	if (!target) {
@@ -7119,17 +7151,19 @@ std::optional<int> State::liftActiveListItemUnchecked() {
 	return activateRebuiltLeaf(*target);
 }
 
-// The active leaf of a list item is either the item text itself or one of the
-// paragraphs directly inside it, so moving the item to another list keeps the
-// leaf shape and only changes the item it points at.
 std::optional<State::LeafPath> State::rebasedActiveListItemLeaf(
 		const BlockPath &list,
 		int itemIndex) const {
 	const auto descriptor = textNode(_activeTextOrdinal);
-	if (!descriptor) {
-		return std::nullopt;
-	}
-	const auto &leaf = descriptor->leaf;
+	return descriptor
+		? rebasedListItemLeaf(descriptor->leaf, list, itemIndex)
+		: std::nullopt;
+}
+
+std::optional<State::LeafPath> State::rebasedListItemLeaf(
+		const LeafPath &leaf,
+		const BlockPath &list,
+		int itemIndex) const {
 	if (leaf.kind == LeafKind::ListItemText) {
 		return LeafPath{
 			.kind = LeafKind::ListItemText,

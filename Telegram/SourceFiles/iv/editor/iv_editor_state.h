@@ -838,6 +838,10 @@ private:
 	[[nodiscard]] std::optional<LeafPath> rebasedActiveListItemLeaf(
 		const BlockPath &list,
 		int itemIndex) const;
+	[[nodiscard]] std::optional<LeafPath> rebasedListItemLeaf(
+		const LeafPath &leaf,
+		const BlockPath &list,
+		int itemIndex) const;
 	[[nodiscard]] std::optional<int> handleActiveParagraphEnterUnchecked(
 		const ActiveEnterContext &context);
 	[[nodiscard]] std::optional<int> handleActiveQuoteEnterUnchecked(
