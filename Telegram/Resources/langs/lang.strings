@@ -748,6 +748,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_shortcuts_show_folder_last" = "Last folder";
 "lng_shortcuts_folder_next" = "Next folder";
 "lng_shortcuts_folder_previous" = "Previous folder";
+"lng_shortcuts_topic_next" = "Next topic";
+"lng_shortcuts_topic_previous" = "Previous topic";
 "lng_shortcuts_scheduled" = "Scheduled messages";
 "lng_shortcuts_archive" = "Archived chats";
 "lng_shortcuts_contacts" = "Contacts list";

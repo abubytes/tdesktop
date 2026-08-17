@@ -198,6 +198,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "info/profile/info_profile_values.h" // SharedMediaCountValue.
 #include "chat_helpers/emoji_suggestions_widget.h"
 #include "core/shortcuts.h"
+#include "window/window_topic_navigation.h"
 #include "core/ui_integration.h"
 #include "support/support_common.h"
 #include "support/support_autocomplete.h"
@@ -2647,6 +2648,12 @@ void HistoryWidget::setupShortcuts() {
 		request->check(Command::Search, 1) && request->handle([=] {
 			controller()->searchInChat(_history);
 			return true;
+		});
+		request->check(Command::TopicNext, 1) && request->handle([=] {
+			return Window::JumpToAdjacentTopic(controller(), 1);
+		});
+		request->check(Command::TopicPrevious, 1) && request->handle([=] {
+			return Window::JumpToAdjacentTopic(controller(), -1);
 		});
 		request->check(Command::ShowChatMenu, 1) && request->handle([=] {
 			Window::ActivateWindow(controller());

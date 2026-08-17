@@ -27,6 +27,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "core/click_handler_types.h"
 #include "core/shortcuts.h"
+#include "window/window_topic_navigation.h"
 #include "core/ui_integration.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/popup_menu.h"
@@ -6262,6 +6263,14 @@ void InnerWidget::setupShortcuts() {
 			return CheckAndJumpToNearChatsFilter(_controller, false, true);
 		});
 
+		request->check(Command::TopicNext) && request->handle([=] {
+			return Window::JumpToAdjacentTopic(_controller, 1);
+		});
+
+		request->check(Command::TopicPrevious) && request->handle([=] {
+			return Window::JumpToAdjacentTopic(_controller, -1);
+		});
+
 		request->check(Command::ReadChat) && request->handle([=] {
 			const auto thread = _selected ? _selected->thread() : nullptr;
 			if (!thread) {
@@ -6304,6 +6313,21 @@ void InnerWidget::setupShortcuts() {
 				return true;
 			});
 		}
+	}, lifetime());
+
+	Shortcuts::Requests(
+	) | rpl::filter([=] {
+		return isActiveWindow()
+			&& !_controller->isLayerShown()
+			&& !_controller->window().locked();
+	}) | rpl::on_next([=](not_null<Shortcuts::Request*> request) {
+		using Command = Shortcuts::Command;
+		request->check(Command::TopicNext) && request->handle([=] {
+			return Window::JumpToAdjacentTopic(_controller, 1);
+		});
+		request->check(Command::TopicPrevious) && request->handle([=] {
+			return Window::JumpToAdjacentTopic(_controller, -1);
+		});
 	}, lifetime());
 }
 

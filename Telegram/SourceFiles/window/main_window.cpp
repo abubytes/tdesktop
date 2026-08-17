@@ -30,6 +30,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_session.h"
 #include "data/data_forum_topic.h"
 #include "data/data_user.h"
+#include "window/window_topic_navigation.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
 #include "base/options.h"
@@ -902,8 +903,14 @@ void MainWindow::updateTitle() {
 	const auto separateSharedMediaTitle = session
 		? TitleFromSeparateSharedMedia(settings, session->windowId())
 		: QString();
+	const auto applyTag = [&] {
+		Platform::SetXdgToplevelTag(
+			this,
+			Window::XdgToplevelTagFor(sessionController()));
+	};
 	if (!separateSharedMediaTitle.isEmpty()) {
 		setTitle(separateSharedMediaTitle + suffix);
+		applyTag();
 		return;
 	}
 	const auto key = (session && !settings.hideChatName)
@@ -912,6 +919,7 @@ void MainWindow::updateTitle() {
 	const auto thread = key ? key.thread() : nullptr;
 	if (!thread) {
 		setTitle((user.isEmpty() ? u"Telegram"_q : user) + added + suffix);
+		applyTag();
 		return;
 	}
 	const auto history = thread->owningHistory();
@@ -932,6 +940,7 @@ void MainWindow::updateTitle() {
 		? u" \u2013"_q
 		: QString();
 	setTitle(primary + middle + added + suffix);
+	applyTag();
 }
 
 QRect MainWindow::computeDesktopRect() const {

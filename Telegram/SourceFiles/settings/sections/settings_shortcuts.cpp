@@ -99,6 +99,8 @@ struct Labeled {
 		{ C::ShowFolderLast, tr::lng_shortcuts_show_folder_last() },
 		{ C::FolderNext, tr::lng_shortcuts_folder_next() },
 		{ C::FolderPrevious, tr::lng_shortcuts_folder_previous() },
+		{ C::TopicPrevious, tr::lng_shortcuts_topic_previous() },
+		{ C::TopicNext, tr::lng_shortcuts_topic_next() },
 		{ C::ShowArchive, tr::lng_shortcuts_archive() },
 		{ C::ShowContacts, tr::lng_shortcuts_contacts() },
 		separator,
