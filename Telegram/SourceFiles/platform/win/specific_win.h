@@ -16,6 +16,9 @@ namespace Platform {
 inline void IgnoreApplicationActivationRightNow() {
 }
 
+inline void SetXdgToplevelTag(not_null<QWidget*> window, const QString &tag) {
+}
+
 inline bool TrayIconSupported() {
 	return true;
 }

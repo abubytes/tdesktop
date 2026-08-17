@@ -60,6 +60,9 @@ enum class Command {
 	FolderNext,
 	FolderPrevious,
 
+	TopicPrevious,
+	TopicNext,
+
 	ShowScheduled,
 
 	ShowArchive,

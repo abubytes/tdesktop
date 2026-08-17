@@ -63,6 +63,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/qt/qt_key_modifiers.h"
 #include "core/application.h"
 #include "core/shortcuts.h"
+#include "window/window_topic_navigation.h"
 #include "core/click_handler_types.h"
 #include "core/mime_type.h"
 #include "main/main_session.h"
@@ -3826,6 +3827,12 @@ void ChatWidget::setupShortcuts() {
 		request->check(Command::Search, 1) && request->handle([=] {
 			searchRequested();
 			return true;
+		});
+		request->check(Command::TopicNext, 1) && request->handle([=] {
+			return Window::JumpToAdjacentTopic(controller(), 1);
+		});
+		request->check(Command::TopicPrevious, 1) && request->handle([=] {
+			return Window::JumpToAdjacentTopic(controller(), -1);
 		});
 	}, lifetime());
 }

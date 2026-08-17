@@ -1630,6 +1630,7 @@ PRIVATE
     platform/linux/tray_linux.cpp
     platform/linux/tray_linux.h
     platform/linux/webauthn_linux.cpp
+    platform/linux/xdg_toplevel_tag_linux.cpp
     platform/mac/file_utilities_mac.mm
     platform/mac/file_utilities_mac.h
     platform/mac/global_menu_mac.h
@@ -2042,6 +2043,8 @@ PRIVATE
     window/window_session_controller_link_info.h
     window/window_setup_email.cpp
     window/window_setup_email.h
+    window/window_topic_navigation.cpp
+    window/window_topic_navigation.h
     window/window_top_bar_wrap.h
     window/themes/window_theme.cpp
     window/themes/window_theme.h

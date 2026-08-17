@@ -52,6 +52,8 @@ const auto AutoRepeatCommands = base::flat_set<Command>{
 	Command::ChatNext,
 	Command::ChatFirst,
 	Command::ChatLast,
+	Command::TopicPrevious,
+	Command::TopicNext,
 };
 
 const auto MediaCommands = base::flat_set<Command>{
@@ -102,6 +104,8 @@ const auto CommandByName = base::flat_map<QString, Command>{
 
 	{ u"previous_folder"_q   , Command::FolderPrevious },
 	{ u"next_folder"_q       , Command::FolderNext },
+	{ u"previous_topic"_q    , Command::TopicPrevious },
+	{ u"next_topic"_q        , Command::TopicNext },
 	{ u"all_chats"_q         , Command::ShowAllChats },
 
 	{ u"account1"_q          , Command::ShowAccount1 },
@@ -523,6 +527,9 @@ void Manager::fillDefaults() {
 
 	set(u"%1+shift+down"_q.arg(ctrl), Command::FolderNext);
 	set(u"%1+shift+up"_q.arg(ctrl), Command::FolderPrevious);
+
+	set(u"ctrl+alt+left"_q, Command::TopicPrevious);
+	set(u"ctrl+alt+right"_q, Command::TopicNext);
 
 	set(u"ctrl+0"_q, Command::ChatSelf);
 

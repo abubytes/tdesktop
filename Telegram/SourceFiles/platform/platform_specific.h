@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+class QWidget;
+
 namespace Core {
 enum class QuitReason;
 } // namespace Core
@@ -55,6 +57,7 @@ void NewVersionLaunched(int oldVersion);
 [[nodiscard]] bool PreventsQuit(Core::QuitReason reason);
 [[nodiscard]] QString ExecutablePathForShortcuts();
 void LaunchMaps(const Data::LocationPoint &point, Fn<void()> fail);
+void SetXdgToplevelTag(not_null<QWidget*> window, const QString &tag);
 
 #if QT_VERSION < QT_VERSION_CHECK(6, 5, 0)
 [[nodiscard]] std::optional<bool> IsDarkMode();
