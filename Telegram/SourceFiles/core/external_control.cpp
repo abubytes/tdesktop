@@ -9,12 +9,32 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "core/application.h"
 #include "core/core_settings.h"
+#include "boxes/connection_box.h"
+#include "data/data_forum.h"
+#include "data/data_forum_topic.h"
+#include "data/data_msg_id.h"
+#include "data/data_peer.h"
+#include "data/data_peer_id.h"
+#include "data/data_session.h"
+#include "data/data_thread.h"
+#include "dialogs/dialogs_indexed_list.h"
+#include "history/history.h"
+#include "main/main_domain.h"
+#include "main/main_session.h"
+#include "storage/localstorage.h"
+#include "storage/storage_domain.h"
 #include "window/window_controller.h"
+#include "window/window_separate_id.h"
+#include "window/window_session_controller.h"
+#include "window/window_topic_navigation.h"
 #include "ui/layers/generic_box.h"
+#include "ui/text/text_utilities.h"
+#include "ui/toast/toast.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/labels.h"
 #include "ui/vertical_list.h"
 #include "base/random.h"
+#include "base/flat_map.h"
 #include "styles/style_boxes.h"
 #include "styles/style_layers.h"
 #include "styles/style_widgets.h"
@@ -29,6 +49,7 @@ namespace Core {
 namespace {
 
 constexpr auto kAutomationKey = std::string_view("automation.enabled");
+constexpr auto kProxyUndoDuration = crl::time(8000);
 
 struct WindowEntry {
 	not_null<Window::Controller*> controller;
@@ -160,16 +181,68 @@ void RequestEnableAutomation() {
 	return result;
 }
 
+[[nodiscard]] QString SeparateTypeName(Window::SeparateType type) {
+	using Type = Window::SeparateType;
+	switch (type) {
+	case Type::Primary: return u"primary"_q;
+	case Type::Archive: return u"archive"_q;
+	case Type::Chat: return u"chat"_q;
+	case Type::Forum: return u"forum"_q;
+	case Type::Community: return u"community"_q;
+	case Type::SavedSublist: return u"saved_sublist"_q;
+	case Type::SharedMedia: return u"shared_media"_q;
+	}
+	return u"unknown"_q;
+}
+
+void FillWindowObject(
+		QJsonObject &object,
+		const WindowEntry &entry,
+		int index,
+		Window::Controller *active) {
+	object.insert(u"id"_q, index);
+	object.insert(u"title"_q, entry.window->windowTitle());
+	object.insert(u"primary"_q, entry.controller->isPrimary());
+	object.insert(u"active"_q, (entry.controller.get() == active));
+	const auto session = entry.controller->sessionController();
+	if (!session) {
+		return;
+	}
+	object.insert(u"type"_q, SeparateTypeName(session->windowId().type));
+	object.insert(u"kind"_q, session->isPrimary() ? u"main"_q : u"chat"_q);
+	object.insert(
+		u"accountId"_q,
+		QString::number(session->session().userId().bare));
+	object.insert(u"xdgTag"_q, Window::XdgToplevelTagFor(session));
+	PeerData *peer = nullptr;
+	Data::ForumTopic *topic = nullptr;
+	if (const auto thread = session->activeChatCurrent().thread()) {
+		topic = thread->asTopic();
+		peer = thread->peer();
+	} else if (const auto forum = session->shownForum().current()) {
+		peer = forum->peer();
+	}
+	if (peer) {
+		object.insert(
+			u"peerId"_q,
+			QString::number(peer->isChannel()
+				? peerToChannel(peer->id).bare
+				: peer->id.value));
+		object.insert(u"peerTitle"_q, peer->name());
+	}
+	if (topic) {
+		object.insert(u"topicId"_q, QString::number(topic->rootId().bare));
+		object.insert(u"topicTitle"_q, topic->title());
+	}
+}
+
 [[nodiscard]] QByteArray HandleWindows() {
 	const auto active = App().activeWindow();
 	auto list = QJsonArray();
 	auto index = 0;
 	for (const auto &entry : CollectWindows()) {
 		auto object = QJsonObject();
-		object.insert(u"id"_q, index++);
-		object.insert(u"title"_q, entry.window->windowTitle());
-		object.insert(u"primary"_q, entry.controller->isPrimary());
-		object.insert(u"active"_q, (entry.controller.get() == active));
+		FillWindowObject(object, entry, index++, active);
 		list.append(object);
 	}
 	auto object = QJsonObject();
@@ -187,6 +260,183 @@ void RequestEnableAutomation() {
 	auto object = QJsonObject();
 	object.insert(u"ok"_q, true);
 	object.insert(u"activated"_q, index);
+	return Pack(object);
+}
+
+[[nodiscard]] base::flat_map<QString, QString> ParseFields(QStringView rest) {
+	auto result = base::flat_map<QString, QString>();
+	for (const auto &part : QString(rest).split(',')) {
+		const auto eq = part.indexOf('=');
+		if (eq > 0) {
+			result.emplace(part.mid(0, eq).trimmed(), part.mid(eq + 1).trimmed());
+		}
+	}
+	return result;
+}
+
+[[nodiscard]] QString FieldAt(
+		const base::flat_map<QString, QString> &fields,
+		const QString &key) {
+	const auto i = fields.find(key);
+	return (i != fields.end()) ? i->second : QString();
+}
+
+[[nodiscard]] Data::Forum *ForumFromPeer(
+		not_null<Main::Session*> session,
+		qint64 rawPeer) {
+	if (!rawPeer) {
+		return nullptr;
+	}
+	const auto tryId = [&](PeerId id) -> Data::Forum* {
+		if (const auto peer = session->data().peerLoaded(id)) {
+			return peer->forum();
+		}
+		return nullptr;
+	};
+	if (const auto forum = tryId(PeerId(uint64(rawPeer)))) {
+		return forum;
+	}
+	if (rawPeer > 0) {
+		return tryId(peerFromChannel(ChannelId(uint64(rawPeer))));
+	}
+	return nullptr;
+}
+
+[[nodiscard]] QByteArray HandleShowTopic(QStringView rest) {
+	const auto fields = ParseFields(rest);
+	const auto topicId = MsgId(FieldAt(fields, u"topic"_q).toLongLong());
+	if (!topicId) {
+		return Error(u"topic id required"_q);
+	}
+	const auto windows = CollectWindows();
+	auto windowIndex = -1;
+	if (fields.contains(u"window"_q)) {
+		windowIndex = FieldAt(fields, u"window"_q).toInt();
+		if (windowIndex < 0 || windowIndex >= int(windows.size())) {
+			return Error(u"no such window"_q);
+		}
+	}
+	const auto rawPeer = FieldAt(fields, u"peer"_q).toLongLong();
+	const auto tryWindow = [&](const WindowEntry &entry) -> bool {
+		const auto session = entry.controller->sessionController();
+		if (!session) {
+			return false;
+		}
+		auto forum = ForumFromPeer(&session->session(), rawPeer);
+		if (!forum) {
+			if (const auto shown = session->shownForum().current()) {
+				forum = shown;
+			}
+		}
+		if (!forum) {
+			const auto thread = session->activeChatCurrent().thread();
+			if (thread) {
+				if (const auto topic = thread->asTopic()) {
+					forum = topic->forum();
+				} else {
+					forum = thread->peer()->forum();
+				}
+			}
+		}
+		if (!forum) {
+			return false;
+		}
+		if (rawPeer) {
+			const auto peer = forum->peer();
+			const auto matches = peer->isChannel()
+				? (peerToChannel(peer->id).bare == uint64(rawPeer)
+					|| peer->id.value == uint64(rawPeer))
+				: (peer->id.value == uint64(rawPeer));
+			if (!matches) {
+				return false;
+			}
+		}
+		const auto show = [=](not_null<Data::ForumTopic*> topic) {
+			session->showTopic(
+				topic,
+				ShowAtUnreadMsgId,
+				Window::SectionShow::Way::ClearStack);
+			entry.controller->activate();
+		};
+		if (const auto topic = forum->topicFor(topicId)) {
+			show(topic);
+			return true;
+		}
+		const auto weak = base::make_weak(session);
+		forum->requestTopic(topicId, [=] {
+			if (const auto strong = weak.get()) {
+				if (const auto topic = forum->topicFor(topicId)) {
+					strong->showTopic(
+						topic,
+						ShowAtUnreadMsgId,
+						Window::SectionShow::Way::ClearStack);
+					strong->window().activate();
+				}
+			}
+		});
+		return true;
+	};
+
+	if (windowIndex >= 0) {
+		if (!tryWindow(windows[windowIndex])) {
+			return Error(u"window has no matching forum"_q);
+		}
+	} else {
+		auto found = false;
+		for (const auto &entry : windows) {
+			if (tryWindow(entry)) {
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			return Error(u"no matching forum window"_q);
+		}
+	}
+	auto object = QJsonObject();
+	object.insert(u"ok"_q, true);
+	return Pack(object);
+}
+
+[[nodiscard]] QByteArray HandleTopics(QStringView rest) {
+	const auto fields = ParseFields(rest);
+	const auto windows = CollectWindows();
+	auto windowIndex = 0;
+	if (fields.contains(u"window"_q)) {
+		windowIndex = FieldAt(fields, u"window"_q).toInt();
+	}
+	if (windowIndex < 0 || windowIndex >= int(windows.size())) {
+		return Error(u"no such window"_q);
+	}
+	const auto session = windows[windowIndex].controller->sessionController();
+	if (!session) {
+		return Error(u"no session"_q);
+	}
+	Data::Forum *forum = nullptr;
+	if (const auto shown = session->shownForum().current()) {
+		forum = shown;
+	} else if (const auto thread = session->activeChatCurrent().thread()) {
+		if (const auto topic = thread->asTopic()) {
+			forum = topic->forum();
+		} else {
+			forum = thread->peer()->forum();
+		}
+	}
+	if (!forum) {
+		return Error(u"window has no forum"_q);
+	}
+	auto list = QJsonArray();
+	for (const auto &row : forum->topicsList()->indexed()->all()) {
+		if (const auto topic = row->topic()) {
+			auto object = QJsonObject();
+			object.insert(u"id"_q, QString::number(topic->rootId().bare));
+			object.insert(u"title"_q, topic->title());
+			list.append(object);
+		}
+	}
+	auto object = QJsonObject();
+	object.insert(u"ok"_q, true);
+	object.insert(u"topics"_q, list);
 	return Pack(object);
 }
 
@@ -208,6 +458,240 @@ void RequestEnableAutomation() {
 	auto object = QJsonObject();
 	object.insert(u"ok"_q, true);
 	object.insert(u"activated"_q, next);
+	return Pack(object);
+}
+
+[[nodiscard]] QByteArray HandleLock() {
+	if (!App().domain().local().hasLocalPasscode()) {
+		return Error(u"no local passcode set"_q);
+	}
+	const auto already = App().passcodeLocked();
+	if (!already) {
+		App().lockByPasscode();
+	}
+	auto object = QJsonObject();
+	object.insert(u"ok"_q, true);
+	object.insert(u"locked"_q, true);
+	object.insert(u"changed"_q, !already);
+	return Pack(object);
+}
+
+[[nodiscard]] QString ProxyTypeName(MTP::ProxyData::Type type) {
+	switch (type) {
+	case MTP::ProxyData::Type::Socks5: return u"socks5"_q;
+	case MTP::ProxyData::Type::Http: return u"http"_q;
+	case MTP::ProxyData::Type::Mtproto: return u"mtproto"_q;
+	case MTP::ProxyData::Type::Web: return u"web"_q;
+	case MTP::ProxyData::Type::None: break;
+	}
+	return u"none"_q;
+}
+
+[[nodiscard]] QString ProxyModeName(MTP::ProxyData::Settings settings) {
+	switch (settings) {
+	case MTP::ProxyData::Settings::Enabled: return u"enabled"_q;
+	case MTP::ProxyData::Settings::Disabled: return u"disabled"_q;
+	case MTP::ProxyData::Settings::System: break;
+	}
+	return u"system"_q;
+}
+
+[[nodiscard]] QString ProxyLabel(const MTP::ProxyData &proxy) {
+	return ProxyTypeName(proxy.type)
+		+ u" "_q
+		+ proxy.host
+		+ u":"_q
+		+ QString::number(proxy.port);
+}
+
+void ShowProxyToast(const QString &text, Fn<void()> undo) {
+	const auto window = App().activePrimaryWindow();
+	if (!window) {
+		return;
+	}
+	auto content = TextWithEntities{ text + u" "_q };
+	content.append(Ui::Text::Link(u"Undo"_q));
+	const auto instance
+		= std::make_shared<base::weak_ptr<Ui::Toast::Instance>>();
+	*instance = window->uiShow()->showToast({
+		.text = std::move(content),
+		.filter = [=](const auto &...) {
+			undo();
+			if (const auto strong = instance->get()) {
+				strong->hideAnimated();
+			}
+			return false;
+		},
+		.duration = kProxyUndoDuration,
+	});
+}
+
+[[nodiscard]] int ProxyIndexByArgument(const QString &argument) {
+	const auto &proxies = App().settings().proxy();
+	auto ok = false;
+	const auto index = argument.toInt(&ok);
+	if (ok) {
+		return (index >= 0 && index < int(proxies.list().size()))
+			? index
+			: -1;
+	}
+	const auto proxy = ProxiesBoxController::ProxyFromLink(argument);
+	return proxy ? proxies.indexInList(proxy) : -1;
+}
+
+[[nodiscard]] QByteArray HandleProxyList() {
+	const auto &proxies = App().settings().proxy();
+	const auto selected = proxies.selected();
+	auto list = QJsonArray();
+	auto index = 0;
+	for (const auto &proxy : proxies.list()) {
+		auto object = QJsonObject();
+		object.insert(u"id"_q, index++);
+		object.insert(u"type"_q, ProxyTypeName(proxy.type));
+		object.insert(u"host"_q, proxy.host);
+		object.insert(u"port"_q, int(proxy.port));
+		object.insert(u"selected"_q, (proxy == selected));
+		list.append(object);
+	}
+	auto object = QJsonObject();
+	object.insert(u"ok"_q, true);
+	object.insert(u"mode"_q, ProxyModeName(proxies.settings()));
+	object.insert(u"enabled"_q, proxies.isEnabled());
+	object.insert(u"proxies"_q, list);
+	return Pack(object);
+}
+
+[[nodiscard]] QByteArray HandleProxyAdd(const QString &link) {
+	const auto proxy = ProxiesBoxController::ProxyFromLink(link);
+	if (proxy.type == MTP::ProxyData::Type::None) {
+		return Error(u"invalid proxy link"_q);
+	} else if (!proxy) {
+		const auto status = proxy.status();
+		return Error((status == MTP::ProxyData::Status::Unsupported)
+			? u"unsupported proxy"_q
+			: (status == MTP::ProxyData::Status::IncorrectSecret)
+			? u"incorrect proxy secret"_q
+			: u"invalid proxy"_q);
+	}
+	auto &proxies = App().settings().proxy();
+	auto object = QJsonObject();
+	object.insert(u"ok"_q, true);
+	const auto already = proxies.indexInList(proxy);
+	if (already >= 0) {
+		object.insert(u"id"_q, already);
+		object.insert(u"added"_q, false);
+		return Pack(object);
+	}
+	proxies.addToList(proxy);
+	Local::writeSettings();
+	ShowProxyToast(u"Proxy added: "_q + ProxyLabel(proxy), [=] {
+		auto &current = App().settings().proxy();
+		const auto selected = (current.selected() == proxy);
+		if (current.removeFromList(proxy) && selected) {
+			App().setCurrentProxy(
+				MTP::ProxyData(),
+				MTP::ProxyData::Settings::System);
+		}
+		Local::writeSettings();
+	});
+	object.insert(u"id"_q, proxies.indexInList(proxy));
+	object.insert(u"added"_q, true);
+	return Pack(object);
+}
+
+[[nodiscard]] QByteArray HandleProxyRemove(const QString &argument) {
+	const auto index = ProxyIndexByArgument(argument);
+	if (index < 0) {
+		return Error(u"no such proxy"_q);
+	}
+	auto &proxies = App().settings().proxy();
+	const auto proxy = proxies.list()[index];
+	const auto wasSelected = (proxies.selected() == proxy);
+	const auto wasSettings = proxies.settings();
+	if (!proxies.removeFromList(proxy)) {
+		return Error(u"no such proxy"_q);
+	}
+	if (wasSelected) {
+		if (wasSettings == MTP::ProxyData::Settings::Enabled) {
+			App().setCurrentProxy(
+				MTP::ProxyData(),
+				MTP::ProxyData::Settings::System);
+		} else {
+			proxies.setSelected(MTP::ProxyData());
+		}
+	}
+	Local::writeSettings();
+	ShowProxyToast(u"Proxy removed: "_q + ProxyLabel(proxy), [=] {
+		auto &current = App().settings().proxy();
+		if (current.indexInList(proxy) < 0) {
+			current.insertToList(index, proxy);
+		}
+		if (wasSelected) {
+			App().setCurrentProxy(proxy, wasSettings);
+		}
+		Local::writeSettings();
+	});
+	auto object = QJsonObject();
+	object.insert(u"ok"_q, true);
+	object.insert(u"removed"_q, index);
+	return Pack(object);
+}
+
+[[nodiscard]] QByteArray HandleProxySelect(MTP::ProxyData proxy) {
+	auto &proxies = App().settings().proxy();
+	const auto wasSelected = proxies.selected();
+	const auto wasSettings = proxies.settings();
+	App().setCurrentProxy(proxy, MTP::ProxyData::Settings::Enabled);
+	Local::writeSettings();
+	ShowProxyToast(u"Proxy enabled: "_q + ProxyLabel(proxy), [=] {
+		App().setCurrentProxy(wasSelected, wasSettings);
+		Local::writeSettings();
+	});
+	auto object = QJsonObject();
+	object.insert(u"ok"_q, true);
+	object.insert(u"selected"_q, proxies.indexInList(proxy));
+	return Pack(object);
+}
+
+[[nodiscard]] QByteArray HandleProxyUse(const QString &argument) {
+	const auto index = ProxyIndexByArgument(argument);
+	if (index < 0) {
+		return Error(u"no such proxy"_q);
+	}
+	return HandleProxySelect(App().settings().proxy().list()[index]);
+}
+
+[[nodiscard]] QByteArray HandleProxyNext() {
+	const auto &proxies = App().settings().proxy();
+	const auto count = int(proxies.list().size());
+	if (!count) {
+		return Error(u"no proxies configured"_q);
+	}
+	const auto current = proxies.indexInList(proxies.selected());
+	return HandleProxySelect(proxies.list()[(current + 1) % count]);
+}
+
+[[nodiscard]] QByteArray HandleProxyToggle() {
+	auto &proxies = App().settings().proxy();
+	const auto wasSelected = proxies.selected();
+	const auto wasSettings = proxies.settings();
+	if (!proxies.isEnabled()) {
+		if (!wasSelected && proxies.list().empty()) {
+			return Error(u"no proxies configured"_q);
+		}
+		return HandleProxySelect(wasSelected
+			? wasSelected
+			: proxies.list().back());
+	}
+	App().setCurrentProxy(wasSelected, MTP::ProxyData::Settings::Disabled);
+	Local::writeSettings();
+	ShowProxyToast(u"Proxy disabled."_q, [=] {
+		App().setCurrentProxy(wasSelected, wasSettings);
+		Local::writeSettings();
+	});
+	auto object = QJsonObject();
+	object.insert(u"ok"_q, true);
+	object.insert(u"enabled"_q, false);
 	return Pack(object);
 }
 
@@ -236,6 +720,26 @@ QByteArray HandleExternalControl(const QString &command) {
 		return HandleActivate(command.mid(9).toInt());
 	} else if (command == u"cycle"_q) {
 		return HandleCycle();
+	} else if (command == u"lock"_q) {
+		return HandleLock();
+	} else if (command == u"proxies"_q) {
+		return HandleProxyList();
+	} else if (command.startsWith(u"proxy-add:"_q)) {
+		return HandleProxyAdd(command.mid(10));
+	} else if (command.startsWith(u"proxy-remove:"_q)) {
+		return HandleProxyRemove(command.mid(13));
+	} else if (command.startsWith(u"proxy-use:"_q)) {
+		return HandleProxyUse(command.mid(10));
+	} else if (command == u"proxy-next"_q) {
+		return HandleProxyNext();
+	} else if (command == u"proxy-toggle"_q) {
+		return HandleProxyToggle();
+	} else if (command.startsWith(u"show-topic:"_q)) {
+		return HandleShowTopic(command.mid(11));
+	} else if (command.startsWith(u"topics:"_q)) {
+		return HandleTopics(command.mid(7));
+	} else if (command == u"topics"_q) {
+		return HandleTopics({});
 	}
 	return Error(u"unknown control command"_q);
 }

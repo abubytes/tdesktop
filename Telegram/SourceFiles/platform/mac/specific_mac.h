@@ -19,6 +19,9 @@ inline bool AutostartSupported() {
 inline void AutostartRequestStateFromSystem(Fn<void(bool)> callback) {
 }
 
+inline void SetXdgToplevelTag(not_null<QWidget*> window, const QString &tag) {
+}
+
 inline bool TrayIconSupported() {
 	return true;
 }
@@ -26,6 +29,8 @@ inline bool TrayIconSupported() {
 inline bool SkipTaskbarSupported() {
 	return false;
 }
+
+[[nodiscard]] bool HasTouchBar();
 
 void ActivateThisProcess();
 

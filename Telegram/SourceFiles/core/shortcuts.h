@@ -17,6 +17,8 @@ enum class Command {
 	Lock,
 	Minimize,
 	Quit,
+	ReopenClosedWindow,
+	CloseOtherWindows,
 
 	MediaPlay,
 	MediaPause,
@@ -60,6 +62,9 @@ enum class Command {
 	FolderNext,
 	FolderPrevious,
 
+	TopicPrevious,
+	TopicNext,
+
 	ShowScheduled,
 
 	ShowArchive,
@@ -69,6 +74,7 @@ enum class Command {
 	SendSilentMessage,
 	ScheduleMessage,
 	ComposeAiApplyInPlace,
+	ShowRichEditor,
 	ToggleWebPagePreview,
 
 	RecordVoice,
