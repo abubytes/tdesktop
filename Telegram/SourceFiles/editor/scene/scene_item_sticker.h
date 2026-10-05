@@ -9,7 +9,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "editor/scene/scene_item_animated.h"
 #include "media/clip/media_clip_reader.h"
-#include "media/media_video_encode.h"
 
 namespace Data {
 class DocumentMedia;
@@ -62,16 +61,6 @@ private:
 	} _lottie;
 	::Media::Clip::ReaderPointer _webm;
 	QImage _image;
-	struct {
-		QImage image;
-		qint64 key = 0;
-		QSize size;
-		bool flipped = false;
-	} _preview;
-
-	crl::time _loopDuration = 0;
-	bool _releasedAnimation = false;
-	bool _pendingRecreate = false;
 
 	crl::time _loopDuration = 0;
 	bool _releasedAnimation = false;

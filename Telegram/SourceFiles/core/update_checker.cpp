@@ -430,9 +430,6 @@ enum class ManifestAdoption {
 	if (!fVersion.open(QIODevice::WriteOnly)) {
 		LOG(("Update Error: cant write version file '%1'").arg(tempDirPath + u"/version"_q));
 		return false;
-	} else if (input.size() > Loader::kMaxFileSize) {
-		LOG(("Update Error: updates file is too large: %1").arg(input.size()));
-		return false;
 	}
 	fVersion.write((const char*)&versionNum, sizeof(VersionInt));
 	if (canaryVersion) {

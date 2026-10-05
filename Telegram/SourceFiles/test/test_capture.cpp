@@ -16,8 +16,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "styles/palette.h"
 
-#include "styles/palette.h"
-
 #include <QtGui/QPainter>
 #include <QtWidgets/QAbstractScrollArea>
 
@@ -255,13 +253,6 @@ QString MisframedDetails(
 		.arg(logicalRect.height())
 		.arg(inside.width())
 		.arg(logicalRect.width());
-}
-
-QString WidgetDescription(not_null<QWidget*> widget) {
-	const auto &instance = *widget;
-	return u"%1 %2"_q.arg(
-		QString::fromUtf8(typeid(instance).name()),
-		RectText(widget->geometry()));
 }
 
 QString WidgetDescription(not_null<QWidget*> widget) {
