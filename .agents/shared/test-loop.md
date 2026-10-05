@@ -5,6 +5,11 @@ own repository setup, commit boundaries, account safety, and host-specific
 drivers. This protocol owns task-derived evidence selection, execution,
 assessment, recovery, and reporting.
 
+Apply [phase effort](phase-effort.md) when assigning this loop's work.
+Running specified checks may use `medium`; evidence design, authoring,
+verdicts, diagnosis, and repairs favor `xhigh`, with `high` only when the
+parent is sure the particular phase contains nothing complex.
+
 ## Vocabulary
 
 - task-runner — the stateful owner of one task and its evidence loop;
@@ -87,6 +92,10 @@ additions, exit code and complete local log. Direct by-products to the ignored
 run directory or an existing ignored build tree. For every artifact or absence
 claim, quote literal readings and include a known-present control when a typo
 could otherwise pass.
+
+For Linux Debug execution copies, use the shared [bounded ELF identity
+guide](evidence/elf-copies.md) for exact digests, strip-debug equivalence and
+independent positive/negative controls.
 
 Use Telegram only when it adds causal coverage. App behavior that lives in the
 client normally requires the Debug binary and instrumented execution. Visible
@@ -504,7 +513,8 @@ so it can never run against real account data. The overlay must:
 - Log through `test_log.h` (`Step`/`Pass`/`Fail`/`Check`/`Note`/`CheckNear`/`LogGeometry`) —
   it already writes the flushed absolute-path log and the exact `TEST_STEP` / `TEST_RESULT` /
   `SCREENSHOT` / `TEST_COMPLETE` markers the external runner parses. Never hand-roll marker
-  strings or log files.
+  strings or log files. The runner reads `TEST_COMPLETE` as a whole line, so a stage name, note
+  or check detail that quotes the marker inside a longer line is safe and never ends the run.
 - **Capture the target tightly** with `CaptureWidget`/`CaptureRect` — the specific widget /
   row / glyph, unambiguously in frame at usable resolution. A full-window grab that leaves the
   target clipped, off-screen, or thumbnail-sized is NOT acceptable evidence — if the target
@@ -613,7 +623,10 @@ command, environment, exit-code, log, artifact and control evidence.
   from launch** and a quiet-log watchdog while polling `<EVIDENCE_DIR>/test_log.txt`, detects
   `TEST_COMPLETE` versus process death (crash) versus the caps elapsing (hang), kills any
   straggler, and returns one JSON report with the parsed markers, stderr tail, fresh crash
-  diagnostics, `crashpad_dumps_added`, `death_signals`, and `stale_crash_cleared`.
+  diagnostics, `crashpad_dumps_added`, `death_signals`, and `stale_crash_cleared`. The
+  completion marker is matched as a **whole log line** — a line equal to `TEST_COMPLETE` once
+  trailing whitespace is dropped — and never as a substring, so a line that merely quotes it,
+  such as `NOTE: mtp: rpc retry code=500 type=TEST_COMPLETE request=0x…`, is not a completion.
   `TEST_COMPLETE` alone is not success: when the process writes it and then dies, the verdict is
   `died-after-complete`, not `complete`, on any of three independent signals — a non-zero
   `exit_code`, a new `.dmp` in the live `tdata/dumps/completed/` Crashpad database across the run,

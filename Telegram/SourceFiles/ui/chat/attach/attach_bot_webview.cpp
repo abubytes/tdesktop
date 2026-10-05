@@ -49,6 +49,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QJsonObject>
 #include <QtCore/QJsonArray>
 #include <QtCore/QUrl>
+#include <QtCore/QtMath>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QClipboard>
 #include <QtGui/QWindow>
@@ -63,6 +64,7 @@ namespace Ui::BotWebView {
 namespace {
 
 constexpr auto kClipboardReadTimeout = crl::time(10000);
+constexpr auto kOpenLinkTimeout = crl::time(3000);
 constexpr auto kProgressDuration = crl::time(200);
 constexpr auto kProgressOpacity = 0.3;
 constexpr auto kLightnessThreshold = 128;
@@ -779,28 +781,12 @@ void FillNativeSharedPanelMenu(
 	}
 }
 
-[[nodiscard]] QImage RasterizeStyleIcon(const style::icon &icon) {
-	const auto size = icon.size();
-	const auto ratio = style::DevicePixelRatio();
-	auto image = QImage(size * ratio, QImage::Format_ARGB32_Premultiplied);
-	image.setDevicePixelRatio(ratio);
-	image.fill(Qt::transparent);
-	auto painter = Painter(&image);
-	icon.paintInCenter(painter, QRect(QPoint(), size));
-	return image;
-}
-
-[[nodiscard]] QImage RasterizeVerifiedBadge() {
-	const auto size = st::infoVerifiedStar.size() + QSize(0, st::lineWidth);
-	const auto ratio = style::DevicePixelRatio();
-	auto image = QImage(size * ratio, QImage::Format_ARGB32_Premultiplied);
-	image.setDevicePixelRatio(ratio);
-	image.fill(Qt::transparent);
-	auto painter = Painter(&image);
-	const auto width = size.width();
-	st::infoVerifiedStar.paint(painter, st::lineWidth, 0, width);
-	st::infoPeerBadge.verifiedCheck.paint(painter, st::lineWidth, 0, width);
-	return image;
+// WebKit maps CSS pixels to the screen by itself, so rasterize above any
+// screen density (Qt floors it on X11) and let it downscale.
+[[nodiscard]] int ExternalShellAssetRatio() {
+	return std::min(
+		style::DevicePixelRatio() + 1,
+		style::kScaleMax / 100);
 }
 
 [[nodiscard]] QString PngDataUrl(const QImage &image) {
@@ -826,15 +812,41 @@ void FillNativeSharedPanelMenu(
 	return result;
 }
 
-[[nodiscard]] QJsonObject SerializeStyleIconAsset(const style::icon &icon) {
-	return SerializeRasterAsset(RasterizeStyleIcon(icon), icon.size());
+[[nodiscard]] QJsonObject SerializeStyleIconAsset(
+		const style::icon &icon,
+		const style::color &color) {
+	const auto ratio = ExternalShellAssetRatio();
+	const auto image = icon.instance(
+		color->c,
+		ratio * 100,
+		true);
+	return SerializeRasterAsset(image, image.size() / ratio);
 }
 
 [[nodiscard]] QJsonObject SerializeVerifiedBadgeAsset() {
-	const auto size = st::infoVerifiedStar.size() + QSize(0, st::lineWidth);
+	const auto ratio = ExternalShellAssetRatio();
+	const auto scale = ratio * 100;
+	const auto star = st::infoVerifiedStar.instance(
+		st::profileVerifiedCheckBg->c,
+		scale,
+		true);
+	const auto check = st::infoPeerBadge.verifiedCheck.instance(
+		st::profileVerifiedCheckFg->c,
+		scale,
+		true);
+	const auto line = LinuxShell::Unscaled(st::lineWidth) * ratio;
+	auto image = QImage(
+		star.size() + QSize(0, line),
+		QImage::Format_ARGB32_Premultiplied);
+	image.fill(Qt::transparent);
+	{
+		auto p = QPainter(&image);
+		p.drawImage(line, 0, star);
+		p.drawImage(line, 0, check);
+	}
 	return SerializeRasterAsset(
-		RasterizeVerifiedBadge(),
-		size,
+		image,
+		image.size() / ratio,
 		tr::lng_sr_verified_badge(tr::now));
 }
 
@@ -845,7 +857,9 @@ void CollectSharedPanelMenuIcons(
 		if (!item.iconKey.isEmpty()
 			&& item.icon
 			&& !result.contains(item.iconKey)) {
-			result.insert(item.iconKey, SerializeStyleIconAsset(*item.icon));
+			result.insert(
+				item.iconKey,
+				SerializeStyleIconAsset(*item.icon, st::menuIconColor));
 		}
 		if (!item.children.empty()) {
 			CollectSharedPanelMenuIcons(item.children, result);
@@ -1252,7 +1266,6 @@ Panel::Panel(Args &&args)
 			if (!_webview) {
 				return;
 			}
-			applyExternalShellFullscreen(fullscreen);
 			sendFullScreen();
 			sendSafeArea();
 			sendContentSafeArea();
@@ -1291,6 +1304,7 @@ Panel::Panel(Args &&args)
 
 	_widget->backRequests(
 	) | rpl::on_next([=] {
+		_lastUserInteraction = crl::now();
 		postEvent("back_button_pressed");
 	}, _widget->lifetime());
 
@@ -1620,6 +1634,7 @@ bool Panel::showWebview(Args &&args, const Webview::ThemeParams &params) {
 
 	const auto dispatch = SharedPanelMenuDispatchArgs{
 		.settings = [=] {
+			_lastUserInteraction = crl::now();
 			postEvent("settings_button_pressed");
 		},
 		.reload = [=] {
@@ -1889,7 +1904,10 @@ void Panel::requestExternalShellButtonEmoji(const QString &name) {
 	_delegate->botResolveButtonEmoji({
 		.customEmojiId = state->args.iconCustomEmojiId,
 		.textColor = state->textColor,
-		.size = kExternalShellButtonIconSize,
+		// Custom emoji take a logical size, rasterize them as other assets.
+		.size = int(std::ceil(kExternalShellButtonIconSize
+			* ExternalShellAssetRatio()
+			/ double(style::DevicePixelRatio()))),
 		.callback = std::move(send),
 	});
 }
@@ -1918,7 +1936,9 @@ void Panel::sendExternalShellAssets() {
 	sendExternalShellMethod("setAssets", {
 		{ u"icons"_q, icons },
 		{ u"titleMenuIcon"_q,
-			SerializeStyleIconAsset(st::separatePanelMenu.icon) },
+			SerializeStyleIconAsset(
+				st::separatePanelMenu.icon,
+				st::boxTitleCloseFg) },
 		{ u"verifiedBadge"_q, SerializeVerifiedBadgeAsset() },
 		{ u"menuPalette"_q, LinuxShell::MenuPalette() },
 	});
@@ -1927,6 +1947,7 @@ void Panel::sendExternalShellAssets() {
 void Panel::handleExternalShellMenuAction(const QString &id) {
 	DispatchSharedPanelMenuAction(id, {
 		.settings = [=] {
+			_lastUserInteraction = crl::now();
 			postEvent("settings_button_pressed");
 		},
 		.reload = [=] {
@@ -2162,7 +2183,7 @@ bool Panel::createWebview(const Webview::ThemeParams &params) {
 				? Webview::WindowStyle::Frameless
 				: Webview::WindowStyle::Default,
 			.windowMargins = _externalShell
-				? st::botWebViewShellShadowPadding
+				? LinuxShell::Unscaled(st::botWebViewShellShadowPadding)
 				: QMargins(),
 			.initialSize = _externalShell
 				? LinuxShell::WindowSize(st::botWebViewPanelSize)
@@ -2208,7 +2229,7 @@ bool Panel::createWebview(const Webview::ThemeParams &params) {
 #endif // !Q_OS_WIN && !Q_OS_MAC
 
 	raw->setInteractionHandler([=] {
-		_lastWebviewInteraction = crl::now();
+		_lastUserInteraction = crl::now();
 	});
 	raw->setExternalWindowCloseHandler([=] {
 		if (!_externalShell
@@ -2219,6 +2240,11 @@ bool Panel::createWebview(const Webview::ThemeParams &params) {
 		_externalWindowCloseRequested = true;
 		invalidateExternalShellSession();
 		requestClose();
+	});
+	raw->setFullscreenChangedHandler([=](bool fullscreen) {
+		if (_externalShell && _webview && &_webview->window == raw) {
+			_fullscreen = fullscreen;
+		}
 	});
 
 	QObject::connect(raw->widget(), &QObject::destroyed, [=] {
@@ -2348,18 +2374,22 @@ bool Panel::createWebview(const Webview::ThemeParams &params) {
 		} else if (command == "web_app_request_content_safe_area") {
 			sendContentSafeArea();
 		} else if (command == "web_app_request_fullscreen") {
-			if (!_fullscreen.current()) {
-				_fullscreen = true;
-			} else {
+			if (_fullscreen.current()) {
 				sendFullScreen();
+			} else if (_externalShell) {
+				applyExternalShellFullscreen(true);
+			} else {
+				_fullscreen = true;
 			}
 		} else if (command == "web_app_request_file_download") {
 			processDownloadRequest(arguments);
 		} else if (command == "web_app_exit_fullscreen") {
-			if (_fullscreen.current()) {
-				_fullscreen = false;
-			} else {
+			if (!_fullscreen.current()) {
 				sendFullScreen();
+			} else if (_externalShell) {
+				applyExternalShellFullscreen(false);
+			} else {
+				_fullscreen = false;
 			}
 		} else if (command == "web_app_check_home_screen") {
 			postEvent("home_screen_checked", QJsonObject{
@@ -2596,7 +2626,9 @@ void Panel::sendContentSafeArea() {
 		: 0;
 	const auto scaled = top * style::DevicePixelRatio();
 	auto report = 0;
-	if (const auto screen = QGuiApplication::primaryScreen()) {
+	if (_externalShell) {
+		report = LinuxShell::Unscaled(top);
+	} else if (const auto screen = QGuiApplication::primaryScreen()) {
 		const auto dpi = screen->logicalDotsPerInch();
 		const auto ratio = screen->devicePixelRatio();
 		const auto basePair = screen->handle()->logicalBaseDpi();
@@ -2844,13 +2876,43 @@ void Panel::openExternalLink(const QJsonObject &args) {
 		LOG(("BotWebView Error: Bad url in openExternalLink."));
 		requestClose();
 		return;
-	} else if (!allowOpenLink()) {
-		return;
-	} else if (iv) {
-		_delegate->botOpenIvLink(url);
-	} else {
-		File::OpenUrl(url);
 	}
+	const auto open = [=] {
+		if (iv) {
+			_delegate->botOpenIvLink(url);
+		} else {
+			File::OpenUrl(url);
+		}
+	};
+	if (allowOpenLink()) {
+		open();
+	} else {
+		confirmExternalLink(url, open);
+	}
+}
+
+void Panel::confirmExternalLink(const QString &url, Fn<void()> open) {
+	if (!_webview) {
+		return;
+	}
+	using Button = Webview::PopupArgs::Button;
+	const auto parsed = QUrl(url);
+	const auto weak = base::make_weak(this);
+	showPopup({
+		.parent = webviewWindowForPopup(),
+		.title = tr::lng_open_this_link(tr::now),
+		.text = (parsed.isValid()
+			? QString::fromUtf8(parsed.toEncoded())
+			: url),
+		.buttons = {
+			{ .id = "open", .text = tr::lng_open_link(tr::now) },
+			{ .id = "cancel", .type = Button::Type::Cancel },
+		},
+	}, [=](Webview::PopupResult result) {
+		if (weak && result.id == "open") {
+			open();
+		}
+	});
 }
 
 void Panel::openInvoice(const QJsonObject &args) {
@@ -2916,6 +2978,8 @@ void Panel::openPopup(const QJsonObject &args) {
 	}, [=](Webview::PopupResult result) {
 		if (!weak) {
 			return;
+		} else if (result.id) {
+			_lastUserInteraction = crl::now();
 		}
 		postEvent("popup_closed", result.id
 			? QJsonObject{ { u"button_id"_q, *result.id } }
@@ -3098,13 +3162,13 @@ void Panel::requestClipboardText(const QJsonObject &args) {
 	postEvent(u"clipboard_text_received"_q, result);
 }
 
-bool Panel::allowOpenLink() const {
-	//const auto now = crl::now();
-	//if (_mainButtonLastClick
-	//	&& _mainButtonLastClick + kProcessClickTimeout >= now) {
-	//	_mainButtonLastClick = 0;
-	//	return true;
-	//}
+bool Panel::allowOpenLink() {
+	if (!_lastUserInteraction
+		|| _lastUserInteraction == _openLinkInteraction
+		|| _lastUserInteraction + kOpenLinkTimeout < crl::now()) {
+		return false;
+	}
+	_openLinkInteraction = _lastUserInteraction;
 	return true;
 }
 
@@ -3113,8 +3177,8 @@ bool Panel::allowClipboardQuery() const {
 		return false;
 	}
 	const auto now = crl::now();
-	return _lastWebviewInteraction
-		&& (_lastWebviewInteraction + kClipboardReadTimeout >= now);
+	return _lastUserInteraction
+		&& (_lastUserInteraction + kClipboardReadTimeout >= now);
 }
 
 void Panel::scheduleCloseWithConfirmation() {
@@ -3427,6 +3491,7 @@ void Panel::createButton(std::unique_ptr<Button> &button) {
 
 	raw->setClickedCallback([=] {
 		if (!raw->isDisabled()) {
+			_lastUserInteraction = crl::now();
 			if (raw == _mainButton.get()) {
 				postEvent("main_button_pressed");
 			} else if (raw == _secondaryButton.get()) {
