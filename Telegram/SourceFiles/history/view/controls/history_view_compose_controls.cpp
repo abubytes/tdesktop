@@ -151,6 +151,7 @@ constexpr auto kFullDayInMs = 86400 * 1000;
 constexpr auto kMouseEvents = {
 	QEvent::MouseMove,
 	QEvent::MouseButtonPress,
+	QEvent::MouseButtonDblClick,
 	QEvent::MouseButtonRelease
 };
 constexpr auto kRefreshSlowmodeLabelTimeout = crl::time(200);
@@ -541,7 +542,8 @@ void FieldHeader::init() {
 			return;
 		}
 		const auto isLeftButton = (e->button() == Qt::LeftButton);
-		if (type == QEvent::MouseButtonPress) {
+		if (type == QEvent::MouseButtonPress
+			|| type == QEvent::MouseButtonDblClick) {
 			if (isLeftButton && inPhotoEdit) {
 				_editPhotoRequests.fire({});
 			} else if (isLeftButton && inPreviewRect) {
@@ -1796,9 +1798,9 @@ void ComposeControls::setupCommentsShownNewDot() {
 
 void ComposeControls::setToggleCommentsButton(
 		rpl::producer<ToggleCommentsState> state) {
-	if (!state) {
-		delete base::take(_commentsShown);
-	} else {
+	_commentsShownNewDot = nullptr;
+	delete base::take(_commentsShown);
+	if (state) {
 		_commentsShown = Ui::CreateChild<Ui::IconButton>(
 			_wrap.get(),
 			_st.commentsShow);
@@ -1809,12 +1811,9 @@ void ComposeControls::setToggleCommentsButton(
 		_commentsShownHidden.value(
 		) | rpl::on_next([=](bool hidden) {
 			if (_commentsShown->isHidden() != hidden) {
-				if (hidden) {
-					_commentsShown->hide();
-				} else {
-					_commentsShown->show();
-					updateControlsGeometry(_wrap->size());
-				}
+				_commentsShown->setVisible(!hidden);
+				updateControlsGeometry(_wrap->size());
+				_commentsShown->parentWidget()->update();
 			}
 		}, _commentsShown->lifetime());
 		std::move(
@@ -2057,7 +2056,7 @@ void ComposeControls::setupStarsEffectsCanvas() {
 			const auto scale = kStarEffectScaleMin
 				+ (kStarEffectScaleMax - kStarEffectScaleMin) * opacity;
 
-			const auto rotation = qSin(-M_PI_2
+			const auto rotation = std::sin(-M_PI_2
 				+ M_PI * (animation->shift + animation->progress)
 			) * kStarEffectRotationMax;
 			const auto target = QRect(
@@ -2174,7 +2173,7 @@ auto ComposeControls::sendContentRequests(SendRequestType requestType) const {
 		_send->clicks() | rpl::filter([=] {
 			return sendButtonSends();
 		}) | filter | map,
-		_field->submits() | rpl::filter([=] {
+		_fieldSubmits.events() | rpl::filter([=] {
 			return submitSends();
 		}) | filter | submit,
 		_sendCustomRequests.events() | custom);
@@ -2189,15 +2188,8 @@ Api::SendOptions ComposeControls::adjustedSupportSendOptions(
 	return options;
 }
 
-rpl::producer<> ComposeControls::scrollToMaxRequests() const {
-	return _field->submits() | rpl::filter([=]{
-		if (_mode == Mode::Normal
-			&& !_voiceRecordBar->isListenState()
-			&& getTextWithAppliedMarkdown().text.isEmpty()) {
-			return true;
-		}
-		return false;
-	}) | rpl::to_empty;
+rpl::producer<Api::SendOptions> ComposeControls::scrollToMaxRequests() const {
+	return _scrollToMaxRequests.events();
 }
 
 rpl::producer<Api::SendOptions> ComposeControls::sendRequests() const {
@@ -2296,6 +2288,11 @@ void ComposeControls::offerRichPaste(not_null<const QMimeData*> data) {
 	const auto cursor = _field->textCursor();
 	const auto position = cursor.position();
 	const auto anchor = cursor.anchor();
+	const auto from = std::min(position, anchor);
+	const auto till = std::max(position, anchor);
+	const auto textFrom = int(_field->getTextWithTagsPart(0, from).text.size());
+	const auto textTill = int(_field->getTextWithTagsPart(0, till).text.size());
+	const auto tail = cursor.document()->characterCount() - till;
 	crl::on_main(_wrap.get(), [=] {
 		const auto now = _field->getTextWithTags();
 		const auto parent = _pasteToastParent.data();
@@ -2313,15 +2310,14 @@ void ComposeControls::offerRichPaste(not_null<const QMimeData*> data) {
 					if (!unchanged) {
 						return;
 					}
-					const auto &markdown = decision->markdown;
-					const auto from = std::min(position, anchor);
 					_field->setTextWithTags(ChatHelpers::TextWithTagsReplaced(
 						was,
-						from,
-						std::max(position, anchor),
-						markdown));
+						textFrom,
+						textTill,
+						decision->markdown));
 					_field->setCursorPosition(
-						from + int(markdown.text.size()));
+						_field->textCursor().document()->characterCount()
+							- tail);
 					return;
 				}
 				if (unchanged) {
@@ -2391,6 +2387,9 @@ auto ComposeControls::inlineResultChosen() const
 }
 
 void ComposeControls::showStarted() {
+	if (focused()) {
+		_parent->setFocus();
+	}
 	if (_inlineResults) {
 		_inlineResults->hideFast();
 	}
@@ -3098,6 +3097,20 @@ void ComposeControls::initKeyHandler() {
 void ComposeControls::initField() {
 	_field->setMaxHeight(st::historyComposeFieldMaxHeight);
 	updateSubmitSettings();
+	_field->submits(
+	) | rpl::on_next([=](Qt::KeyboardModifiers modifiers) {
+		// Classify each submit once, before anyone handles it: a send
+		// clears the field, so checking emptiness later would see an
+		// empty field and send once more (marking as read).
+		if (_mode == Mode::Normal
+			&& !isEditingMessage()
+			&& !_voiceRecordBar->isListenState()
+			&& getTextWithAppliedMarkdown().text.isEmpty()) {
+			_scrollToMaxRequests.fire(adjustedSupportSendOptions(modifiers));
+		} else {
+			_fieldSubmits.fire_copy(modifiers);
+		}
+	}, _field->lifetime());
 	_field->cancelled(
 	) | rpl::on_next([=] {
 		escape();
@@ -3907,7 +3920,16 @@ void ComposeControls::initTabbedSelector() {
 				sendMenuDetails(),
 				crl::guard(_field, [=](
 						Api::SendOptions options,
-						TextWithTags caption) {
+						TextWithTags caption,
+						Ui::PreparedList &&edited) {
+					if (!edited.files.empty()) {
+						if (_sendAsFileConfirmed) {
+							_sendAsFileConfirmed(
+								Ui::MakeSingleFileBundle(std::move(edited)),
+								options);
+						}
+						return;
+					}
 					_fileChosen.fire({
 						.document = document,
 						.options = options,
@@ -4403,7 +4425,8 @@ void ComposeControls::initVoiceRecordBar() {
 		return Ui::AppInFocus();
 	}) | rpl::on_next([=](not_null<Shortcuts::Request*> request) {
 		using Command = Shortcuts::Command;
-		if (Data::CanSendAnything(_history->peer, !_topicRootId)) {
+		if (showRecordButton()
+			&& Data::CanSendAnything(_history->peer, !_topicRootId)) {
 			const auto isVoice = request->check(Command::RecordVoice, 1);
 			const auto isRound = !isVoice
 				&& request->check(Command::RecordRound, 1);

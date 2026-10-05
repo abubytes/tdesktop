@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "editor/scene/scene_item_base.h"
+#include "editor/scene/scene_item_animated.h"
 #include "media/clip/media_clip_reader.h"
 #include "media/media_video_encode.h"
 
@@ -21,7 +21,7 @@ class DocumentData;
 
 namespace Editor {
 
-class ItemSticker : public ItemBase {
+class ItemSticker final : public ItemAnimated {
 public:
 	enum { Type = ItemBase::Type + 1 };
 
@@ -33,16 +33,17 @@ public:
 		const QStyleOptionGraphicsItem *option,
 		QWidget *widget) override;
 	[[nodiscard]] not_null<DocumentData*> sticker() const;
-	[[nodiscard]] bool animated() const;
-	[[nodiscard]] Media::Encode::AnimatedEntity animatedEntity(
-		const QTransform &sceneToCanvas) const;
-	[[nodiscard]] QByteArray content() const;
-	[[nodiscard]] crl::time loopDuration() const;
-	void releasePlayers();
+	[[nodiscard]] bool animated() const override;
+	[[nodiscard]] bool hasContent() const override;
+	[[nodiscard]] QByteArray content() const override;
+	[[nodiscard]] crl::time loopDuration() const override;
+	void releasePlayers() override;
 	void setStatus(Status status) override;
 	int type() const override;
 
 protected:
+	[[nodiscard]] Media::Encode::AnimatedEntity::Kind entityKind()
+		const override;
 	void performFlip() override;
 	std::shared_ptr<ItemBase> duplicate(ItemBase::Data data) const override;
 
@@ -67,6 +68,10 @@ private:
 		QSize size;
 		bool flipped = false;
 	} _preview;
+
+	crl::time _loopDuration = 0;
+	bool _releasedAnimation = false;
+	bool _pendingRecreate = false;
 
 	crl::time _loopDuration = 0;
 	bool _releasedAnimation = false;

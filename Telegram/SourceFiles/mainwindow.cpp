@@ -530,7 +530,7 @@ bool MainWindow::showMediaPreview(
 		updateControlsGeometry();
 	}
 	if (_mediaPreview->isHidden()) {
-		fixOrder();
+		raiseMediaPreview();
 	}
 	_mediaPreview->showPreview(origin, document);
 	return true;
@@ -544,7 +544,7 @@ bool MainWindow::showMediaPreview(
 		updateControlsGeometry();
 	}
 	if (_mediaPreview->isHidden()) {
-		fixOrder();
+		raiseMediaPreview();
 	}
 	_mediaPreview->showPreview(origin, photo);
 	return true;
@@ -711,6 +711,10 @@ void MainWindow::fixOrder() {
 	if (_setupEmailLock) _setupEmailLock->raise();
 	if (_passcodeLock) _passcodeLock->raise();
 	if (_layer) _layer->raise();
+	raiseMediaPreview();
+}
+
+void MainWindow::raiseMediaPreview() {
 	if (_mediaPreview) _mediaPreview->raise();
 	if (_testingThemeWarning) _testingThemeWarning->raise();
 }
@@ -770,18 +774,14 @@ void MainWindow::updateControlsGeometry() {
 	if (_main) _main->checkMainSectionToLayer();
 }
 
-void MainWindow::handleStartFiles(
-		QStringList interprets,
-		QStringList paths) {
+void MainWindow::handleStartFiles(QStringList paths) {
 	if (controller().locked()) {
 		return;
 	}
 	Core::App().hideMediaView();
 	ui_hideSettingsAndLayer(anim::type::instant);
 	if (_main) {
-		_main->handleStartFiles(
-			std::move(interprets),
-			std::move(paths));
+		_main->handleStartFiles(std::move(paths));
 	}
 }
 

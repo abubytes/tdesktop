@@ -56,8 +56,11 @@ endif()
 include(cmake/generate_update_keys.cmake)
 generate_update_keys(Telegram ${res_loc}/update)
 
-if (DESKTOP_APP_TEST_APPS OR DESKTOP_APP_SPECIAL_TARGET)
+if (DESKTOP_APP_TEST_APPS OR TDESKTOP_BUILD_UPDATE_TESTS)
     include(cmake/test_update_verify.cmake)
+    if (NOT DESKTOP_APP_DISABLE_AUTOUPDATE)
+        include(cmake/test_update_unpack.cmake)
+    endif()
 endif()
 
 set_target_properties(Telegram PROPERTIES AUTOMOC ON)
@@ -87,7 +90,7 @@ PRIVATE
     desktop-app::lib_webview
     desktop-app::lib_ffmpeg
     desktop-app::lib_stripe
-    desktop-app::external_rlottie
+    desktop-app::external_ada
     desktop-app::external_zlib
     desktop-app::external_minizip
     desktop-app::external_kcoreaddons
@@ -478,6 +481,8 @@ PRIVATE
     calls/calls_panel.h
     calls/calls_panel_background.cpp
     calls/calls_panel_background.h
+    calls/calls_rate_call.cpp
+    calls/calls_rate_call.h
     calls/calls_signal_bars.cpp
     calls/calls_signal_bars.h
     calls/calls_top_bar.cpp
@@ -600,6 +605,8 @@ PRIVATE
     core/update_checker.h
     core/update_keys.cpp
     core/update_keys.h
+    core/update_unpack.cpp
+    core/update_unpack.h
     core/update_verify.cpp
     core/update_verify.h
     core/utils.cpp
@@ -1699,6 +1706,8 @@ PRIVATE
     platform/linux/translate_provider_linux.h
     platform/linux/tray_linux.cpp
     platform/linux/tray_linux.h
+    platform/linux/update_install_linux.cpp
+    platform/linux/update_install_linux.h
     platform/linux/webauthn_linux.cpp
     platform/linux/xdg_toplevel_tag_linux.cpp
     platform/mac/file_utilities_mac.mm
@@ -1934,6 +1943,8 @@ PRIVATE
     storage/storage_domain.h
     storage/storage_facade.cpp
     storage/storage_facade.h
+    storage/storage_folder_archive.cpp
+    storage/storage_folder_archive.h
     storage/storage_media_prepare.cpp
     storage/storage_media_prepare.h
     storage/storage_shared_media.cpp
@@ -1956,24 +1967,38 @@ PRIVATE
     support/support_templates.h
     tde2e/tde2e_integration.cpp
     tde2e/tde2e_integration.h
+    test/test_activation.cpp
+    test/test_activation.h
     test/test_agent.cpp
     test/test_agent.h
+    test/test_box_button.cpp
+    test/test_box_button.h
     test/test_capture.cpp
     test/test_capture.h
     test/test_custom_emoji.cpp
     test/test_custom_emoji.h
+    test/test_gated_stage.cpp
+    test/test_gated_stage.h
     test/test_history_fixtures.cpp
     test/test_history_fixtures.h
     test/test_hover.cpp
     test/test_hover.h
     test/test_ink.cpp
     test/test_ink.h
+    test/test_lang_pack.cpp
+    test/test_lang_pack.h
     test/test_launch_fuse.cpp
     test/test_launch_fuse.h
     test/test_layer_root.cpp
     test/test_layer_root.h
     test/test_log.cpp
     test/test_log.h
+    test/test_log_lines.cpp
+    test/test_log_lines.h
+    test/test_mapped_target.cpp
+    test/test_mapped_target.h
+    test/test_marking_read.cpp
+    test/test_marking_read.h
     test/test_menu.cpp
     test/test_menu.h
     test/test_messages.cpp
@@ -1984,13 +2009,25 @@ PRIVATE
     test/test_panel.h
     test/test_probe.cpp
     test/test_probe.h
+    test/test_rpc_fixture.cpp
+    test/test_rpc_fixture.h
+    test/test_rpc_retry.cpp
+    test/test_rpc_retry.h
     test/test_runner.cpp
     test/test_runner.h
     test/test_scenario.cpp
     test/test_style.cpp
     test/test_style.h
+    test/test_text_reads.cpp
+    test/test_text_reads.h
+    test/test_toast_capture.cpp
+    test/test_toast_capture.h
     test/test_transfer.cpp
     test/test_transfer.h
+    test/test_via_window.cpp
+    test/test_via_window.h
+    test/test_wheel.cpp
+    test/test_wheel.h
     test/test_widgets.cpp
     test/test_widgets.h
     ui/boxes/edit_invite_link_session.cpp
@@ -2550,6 +2587,8 @@ if (NOT DESKTOP_APP_DISABLE_AUTOUPDATE AND NOT build_macstore AND NOT build_wins
             target_link_options(Updater PRIVATE -municode)
         endif()
     elseif (APPLE)
+        # Keep the launch API available to macOS 10.13 release builds.
+        target_compile_options(Updater PRIVATE -Wno-error=deprecated-declarations)
         add_custom_command(TARGET Updater
         POST_BUILD
             COMMAND mkdir -p $<TARGET_FILE_DIR:Telegram>/../Frameworks

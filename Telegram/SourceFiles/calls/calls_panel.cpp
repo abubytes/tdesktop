@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "boxes/peers/replace_boost_box.h" // CreateUserpicsWithMoreBadge
 #include "calls/calls_panel_background.h"
+#include "calls/calls_rate_call.h"
 #include "data/data_photo.h"
 #include "data/data_session.h"
 #include "data/data_user.h"
@@ -79,6 +80,7 @@ namespace {
 
 constexpr auto kHideControlsTimeout = 5 * crl::time(1000);
 constexpr auto kHideControlsQuickTimeout = 2 * crl::time(1000);
+constexpr auto kNameFadeDuration = crl::time(70);
 
 [[nodiscard]] QByteArray BatterySvg(
 		const QSize &s,
@@ -332,6 +334,8 @@ void Panel::initWindow() {
 				_answerHangupRedial->y(),
 				buttonsWidth,
 				_answerHangupRedial->height()).contains(widgetPoint)
+			|| (_rateCall && _rateCall->geometry().contains(widgetPoint))
+			|| (_rateClose && _rateClose->geometry().contains(widgetPoint))
 			|| (!_outgoingPreviewInBody
 				&& _outgoingVideoBubble->geometry().contains(widgetPoint));
 		if (inControls) {
@@ -651,6 +655,16 @@ void Panel::refreshIncomingGeometry() {
 
 void Panel::reinitWithCall(Call *call) {
 	_callLifetime.destroy();
+	_rateNameFade.stop();
+	_rateCall = nullptr;
+	_rateClose = nullptr;
+	_rateNameSwapped = false;
+	_endedDuration = 0;
+	_rateEndedIconPosition = QPoint();
+	_name->setOpacity(1.);
+	_bodySt = _outgoingPreviewInBody
+		? &st::callBodyWithPreview
+		: &st::callBodyLayout;
 	_call = call;
 	const auto guard = gsl::finally([&] {
 		updateControlsShown();
@@ -1017,10 +1031,14 @@ void Panel::showControls() {
 
 	widget()->showChildren();
 	_pinOnTop->setVisible(!_fullScreenOrMaximized.current());
-	_decline->setVisible(_decline->toggled());
-	_cancel->setVisible(_cancel->toggled());
-	_screencast->setVisible(_screencast->toggled());
-	_addPeople->setVisible(_addPeople->toggled());
+	if (_rateCall) {
+		hideControlsForRating();
+	} else {
+		_decline->setVisible(_decline->toggled());
+		_cancel->setVisible(_cancel->toggled());
+		_screencast->setVisible(_screencast->toggled());
+		_addPeople->setVisible(_addPeople->toggled());
+	}
 
 	const auto shown = !_incomingFrameSize.isEmpty();
 	_incoming->widget()->setVisible(shown);
@@ -1129,6 +1147,97 @@ void Panel::refreshOutgoingPreviewInBody(State state) {
 	updateControlsGeometry();
 }
 
+void Panel::showRateCall() {
+	Expects(_call != nullptr);
+	Expects(_rateCall == nullptr);
+
+	_call->takeRatingToPanel();
+	const auto local = int(_call->getDurationMs() / 1000);
+	_endedDuration = local ? local : _call->discardedDuration();
+	_bodySt = &st::callBodyWithPreview;
+
+	_rateCall = base::make_unique_q<RateCall>(widget());
+	_rateCall->ratingValue(
+	) | rpl::on_next([=](int rating) {
+		if (_call) {
+			_call->setRating(rating);
+		}
+	}, _rateCall->lifetime());
+	_rateClose = base::make_unique_q<EndCloseButton>(widget());
+
+	hideControlsForRating();
+	updateControlsGeometry();
+	updateTextColors();
+	updateStatusText(_call->state());
+
+	_rateCall->show();
+	_rateCall->showAnimated();
+	_rateClose->switchToClose(hangupCircleRect(), [=] { finishRateCall(); });
+
+	_rateNameFade.start([=] {
+		const auto value = _rateNameFade.value(1.);
+		if (!_rateNameSwapped && value >= 0.5) {
+			_rateNameSwapped = true;
+			_name->setText(tr::lng_call_ended_title(tr::now));
+			updateControlsGeometry();
+		}
+		_name->setOpacity(std::abs(2. * value - 1.));
+	}, 0., 1., 2 * kNameFadeDuration);
+
+	widget()->update();
+}
+
+void Panel::finishRateCall() {
+	if (_call) {
+		_call->finishRating();
+	}
+}
+
+void Panel::hideControlsForRating() {
+	_answerHangupRedial->hide();
+	_camera->hide();
+	if (_startVideo) {
+		_startVideo->hide();
+	}
+	_decline->hide(anim::type::instant);
+	_cancel->hide(anim::type::instant);
+	_screencast->hide(anim::type::instant);
+	_mute->hide(anim::type::instant);
+	_addPeople->hide(anim::type::instant);
+	if (_fingerprint) {
+		_fingerprint->hide();
+	}
+	if (_remoteAudioMute) {
+		_remoteAudioMute->hide();
+	}
+	if (_remoteLowBattery) {
+		_remoteLowBattery->hide();
+	}
+	hideButtonTooltip();
+}
+
+QRect Panel::hangupCircleRect() const {
+	const auto &st = st::callHangup;
+	return QRect(
+		_answerHangupRedial->x() + st.bgPosition.x(),
+		_answerHangupRedial->y() + st.bgPosition.y(),
+		st.bgSize,
+		st.bgSize);
+}
+
+QRect Panel::rateCloseRect() const {
+	const auto circle = hangupCircleRect();
+	const auto width = std::min(
+		st::callRateCloseWidth,
+		widget()->width() - 2 * st::callRateCloseSkip);
+	const auto height = st::callRateCloseHeight;
+	return QRect(
+		(widget()->width() - width) / 2,
+		circle.y() + (circle.height() - height) / 2,
+		width,
+		height);
+}
+
 void Panel::createPinOnTop() {
 	const auto wrap = _window->controlsWrap();
 	_pinOnTop = base::make_unique_q<Ui::IconButton>(
@@ -1225,6 +1334,7 @@ void Panel::updateControlsShown() {
 	const auto shown = !_incoming
 		|| _incoming->widget()->isHidden()
 		|| _controlsShownForce
+		|| _rateCall
 		|| !_hideControlsRequested;
 	if (_controlsShown != shown) {
 		_controlsShown = shown;
@@ -1322,7 +1432,11 @@ void Panel::updateControlsGeometry() {
 			st::callOutgoingPreviewMax.height(),
 			bodyPreviewHeightMax,
 		}));
+	const auto rateHeight = _rateCall
+		? (st::callRateSkip + st::callRateHeight)
+		: 0;
 	const auto contentHeight = bodyContentHeight
+		+ rateHeight
 		+ (_outgoingPreviewInBody ? bodyPreviewSize.height() : 0);
 	const auto remainingHeight = std::max(available - contentHeight, 0);
 	const auto skipHeight = remainingHeight
@@ -1350,6 +1464,14 @@ void Panel::updateControlsGeometry() {
 		(widget()->width() - _name->width()) / 2,
 		_bodyTop + _bodySt->nameTop);
 	updateStatusGeometry();
+
+	if (_rateCall) {
+		_rateCall->setGeometry(
+			(widget()->width() - st::callRateWidth) / 2,
+			_bodyTop + bodyContentHeight + st::callRateSkip,
+			st::callRateWidth,
+			RateCall::Height());
+	}
 
 	if (_remoteAudioMute) {
 		_remoteAudioMute->moveToLeft(
@@ -1383,6 +1505,9 @@ void Panel::updateControlsGeometry() {
 	}
 
 	updateHangupGeometry();
+	if (_rateClose) {
+		_rateClose->setGeometry(rateCloseRect());
+	}
 	updateButtonTooltipGeometry();
 }
 
@@ -1430,11 +1555,145 @@ void Panel::updateStatusGeometry() {
 	if (widget()->size().isEmpty()) {
 		return;
 	}
+	const auto &icon = st::callRateEndedIcon;
+	const auto showIcon = (_rateCall && _endedDuration > 0);
+	const auto skip = showIcon
+		? (icon.width() + st::callRateEndedSkip)
+		: 0;
 	_status->resizeToNaturalWidth(
-		widget()->width() - 2 * st::callInnerPadding);
-	_status->moveToLeft(
-		(widget()->width() - _status->width()) / 2,
-		_bodyTop + _bodySt->statusTop);
+		widget()->width() - 2 * st::callInnerPadding - skip);
+	const auto top = _bodyTop + _bodySt->statusTop;
+	const auto left = (widget()->width() - _status->width() - skip) / 2;
+	_status->moveToLeft(left + skip, top);
+	_rateEndedIconPosition = showIcon
+		? QPoint(left, top + (_status->height() - icon.height()) / 2)
+		: QPoint();
+}
+
+auto Panel::bottomButtons() const
+-> std::vector<not_null<Ui::CallButton*>> {
+	auto result = std::vector<not_null<Ui::CallButton*>>{
+		_answerHangupRedial.get(),
+		_decline->entity(),
+		_cancel->entity(),
+		_screencast->entity(),
+		_camera.get(),
+		_mute->entity(),
+		_addPeople->entity(),
+	};
+	if (_startVideo) {
+		result.push_back(_startVideo.get());
+	}
+	return result;
+}
+
+void Panel::refreshButtonLabelsShown() {
+	auto shown = true;
+	for (const auto &button : bottomButtons()) {
+		if (!button->textFits()) {
+			shown = false;
+			break;
+		}
+	}
+	if (_buttonLabelsShown == shown) {
+		return;
+	}
+	_buttonLabelsShown = shown;
+	for (const auto &button : bottomButtons()) {
+		button->setLabelShown(shown);
+	}
+	if (shown) {
+		hideButtonTooltip();
+	}
+}
+
+void Panel::setupButtonTooltip(not_null<Ui::CallButton*> button) {
+	button->textFitsValue() | rpl::on_next([=] {
+		refreshButtonLabelsShown();
+	}, button->lifetime());
+
+	const auto over = button->lifetime().make_state<bool>(false);
+	button->events(
+	) | rpl::on_next([=](not_null<QEvent*> e) {
+		const auto type = e->type();
+		if (type == QEvent::Enter) {
+			// Enter events may come from widget destructors,
+			// in that case sync-showing tooltip crashes the whole thing.
+			*over = true;
+			crl::on_main(button, [=] {
+				if (*over) {
+					showButtonTooltip(button);
+				}
+			});
+		} else if (type == QEvent::Leave) {
+			*over = false;
+			crl::on_main(button, [=] {
+				if (!*over && _buttonTooltipFor == button) {
+					hideButtonTooltip();
+				}
+			});
+		}
+	}, button->lifetime());
+}
+
+void Panel::showButtonTooltip(not_null<Ui::CallButton*> button) {
+	hideButtonTooltip();
+	if (_buttonLabelsShown || !_controlsShown || button->isHidden()) {
+		return;
+	}
+	const auto label = Ui::CreateChild<Ui::FlatLabel>(
+		widget().get(),
+		button->textValue(),
+		st::groupCallNiceTooltipLabel);
+	label->naturalWidthValue() | rpl::on_next([=](int width) {
+		label->resizeToWidth(width);
+		updateButtonTooltipGeometry();
+	}, label->lifetime());
+	_buttonTooltip.create(
+		widget().get(),
+		object_ptr<Ui::RpWidget>::fromRaw(label),
+		st::groupCallNiceTooltip);
+	const auto raw = _buttonTooltip.data();
+	const auto weak = base::make_weak(raw);
+	raw->setAttribute(Qt::WA_TransparentForMouseEvents);
+	raw->setHiddenCallback([=] {
+		delete weak.get();
+	});
+	raw->raise();
+	_buttonTooltipFor = button;
+	updateButtonTooltipGeometry();
+	raw->toggleAnimated(true);
+}
+
+void Panel::hideButtonTooltip() {
+	_buttonTooltipFor = nullptr;
+	if (_buttonTooltip) {
+		_buttonTooltip.release()->toggleAnimated(false);
+	}
+}
+
+void Panel::updateButtonTooltipGeometry() {
+	if (!_buttonTooltip) {
+		return;
+	} else if (!_buttonTooltipFor || _buttonTooltipFor->isHidden()) {
+		hideButtonTooltip();
+		return;
+	}
+	const auto button = _buttonTooltipFor.data();
+	const auto geometry = QRect(
+		button->mapTo(widget().get(), QPoint()),
+		button->size());
+	const auto countPosition = [=](QSize size) {
+		const auto skip = st::callInnerPadding;
+		const auto left = std::clamp(
+			geometry.center().x() - size.width() / 2,
+			skip,
+			std::max(widget()->width() - skip - size.width(), skip));
+		return QPoint(
+			left,
+			geometry.y() - st::groupCallNiceTooltipTop - size.height());
+	};
+	_buttonTooltip->pointAt(geometry, RectPart::Top, countPosition);
 }
 
 auto Panel::bottomButtons() const
@@ -1585,6 +1844,18 @@ void Panel::paint(QRect clip) {
 		}
 	}
 
+	if (_rateCall && !_rateEndedIconPosition.isNull()) {
+		const auto fg = st::callName.textFg;
+		const auto color = (_background
+			? _background->textColorOverride(fg)
+			: std::optional<QColor>()).value_or(fg->c);
+		st::callRateEndedIcon.paint(
+			p,
+			_rateEndedIconPosition,
+			widget()->width(),
+			color);
+	}
+
 	if (_incoming && _incoming->widget()->isHidden()) {
 		_call->videoIncoming()->markFrameShown();
 	}
@@ -1592,7 +1863,9 @@ void Panel::paint(QRect clip) {
 
 bool Panel::handleClose() const {
 	if (_call) {
-		if (_call->state() == Call::State::WaitingUserConfirmation
+		if (_call->ratingInPanel()) {
+			_call->finishRating();
+		} else if (_call->state() == Call::State::WaitingUserConfirmation
 			|| _call->state() == Call::State::Busy
 			|| _call->state() == Call::State::Starting
 			|| _call->state() == Call::State::WaitingIncoming) {
@@ -1630,6 +1903,13 @@ void Panel::stateChanged(State state) {
 	const auto isBusy = (state == State::Busy);
 	const auto isWaitingUser = (state == State::WaitingUserConfirmation);
 	_window->togglePowerSaveBlocker(!isBusy && !isWaitingUser);
+
+	if (!_rateCall
+		&& _call->ratingRequested()
+		&& !window()->isHidden()
+		&& (state == State::Ended || state == State::EndedByOtherDevice)) {
+		showRateCall();
+	}
 
 	if ((state != State::HangingUp)
 		&& (state != State::MigrationHangingUp)
@@ -1720,6 +2000,9 @@ void Panel::refreshAnswerHangupRedialLabel() {
 
 void Panel::updateStatusText(State state) {
 	auto statusText = [this, state]() -> QString {
+		if (_rateCall && _endedDuration > 0) {
+			return Ui::FormatDurationText(_endedDuration);
+		}
 		switch (state) {
 		case State::Starting:
 		case State::WaitingInit:
@@ -1757,15 +2040,31 @@ void Panel::updateStatusText(State state) {
 }
 
 void Panel::updateTextColors() {
+	const auto statusFg = _rateCall
+		? st::callName.textFg
+		: st::callStatus.textFg;
 	if (!_background) {
 		_name->setTextColorOverride(std::nullopt);
-		_status->setTextColorOverride(std::nullopt);
+		_status->setTextColorOverride(_rateCall
+			? std::make_optional(statusFg->c)
+			: std::nullopt);
+		if (_rateCall) {
+			_rateCall->setTextColorOverride(std::nullopt);
+		}
 		return;
 	}
 	_name->setTextColorOverride(
 		_background->textColorOverride(st::callName.textFg));
-	_status->setTextColorOverride(
-		_background->textColorOverride(st::callStatus.textFg));
+	auto status = _background->textColorOverride(statusFg);
+	if (_rateCall && !status) {
+		status = statusFg->c;
+	}
+	_status->setTextColorOverride(status);
+	if (_rateCall) {
+		_rateCall->setTextColorOverride(
+			_background->textColorOverride(st::callRateTitle.textFg));
+		_rateCall->setCardOverlay(_background->cardOverlay());
+	}
 }
 
 void Panel::startDurationUpdateTimer(crl::time currentDuration) {
